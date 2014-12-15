@@ -1,0 +1,303 @@
+1 -
+Welcome and thanks for coming. Let's start. Brendan having a talk in another room.
+
+2 - 
+So, who am I and what's this about?
+I'm Pere Villega, Lead developer at Gumtree - a classifieds company that belongs to eBay.
+We have been talking about improving our architecture, and with all this talk about microservices 
+ we explored the area
+We are still working on it
+It's my first talk in a conference (and I got the big room...) so I'd appreciate if you help me 
+ by asking questions at the end
+
+3 -
+Before we start, some disclaimers
+Opinions expressed are my own, not my employer. Also, I understand the level in here is pretty high,
+  so some stuff may seem obvious to some of you. Trust me, it is not so for other people. If you feel it 
+  is obvious, congratulations, you are good, wasn't so for many of us before :)
+  
+A big thank you to the community. There's been a lot being written about microservices and 
+  all that recently, which helped us a lot. 
+  
+Definitions: I may use some terms in a very loose way. For example, I may say something about boundaries 
+ and domains. Please don;t get lost in the details of a definition, it happens quite a lot, focus on the
+ general image.
+ 
+Last but not least: when I sent the abstract I expected to be in a more advanced estate of implementation. 
+ Unfortunately life happens and we are not as far ahead as I wanted. That said, this is not just my 
+ crazy idea, it has had validation and some parts are running in ecg itself, so it works.
+
+
+5 - 
+Let's set the context. Not any existing app I know, but probably common. 
+The plan to convert the monolith to microservices seemed easy enough
+They identified bounded contexts in the application
+Isolated them in the code, extracted them and deployed them
+Then rinse and repeat for each boundary. Pretty straightforward
+
+6 -
+But they are not experts, and a lot of questions arise. Some of them are the following:
+
+What about service discoverability? How do services know where to find the other services? 
+  That get more complex by the next point: what about adding and removing services? 
+  
+You want to add 1 service to an existing pool of 20 that want to interact with it
+  How do you do it? Change all of them to add new config keys and endpoints?
+ 
+Microservices promote throwing away code that becomes obsolete  
+  but you don't want to go over the reverse process (remove config) each time
+  
+Not everyone loves Scala (I know), and one of the selling points of microservices is being able to use any language. 
+  How to integrate them? 
+
+There is the issue of data integrity. Yes, we all know we want to be eventually consistent, but 
+  the problem is how to get there. Network will fail (remember network fallacies?), how to ensure our
+  50 services work as expected
+  
+Then there is error management. How do we tackle exceptions in services? What about data in transit, 
+  how do we ensure nothing is lost?
+  
+7-
+My proposal to tackle these issues is to use Kafka as a simple solution for the problems.
+  Now, I'm aware that some of these problems are solved. You can use DNS, Etcd, and many other tools
+  Personally, I love simplicity. If I can do something with 1 tool, I'd rather not use 3. 
+  I'm not saying this is a better approach, but it seems to work
+  
+Let's start by explaining what is Kafka for those who may not know
+  Kafka is a distributed publish-subscribe messaging system
+  It is implemented as a distributed commit log, with at-least-once delivery guarantees (this matters)
+
+So you have producers sending messages to a topic, and subscribers consuming those messages
+
+Why not http calls? It works, sure, but async communication (put message, read later). Not always, but works in many scenarios
+ 
+
+8-
+This is how LinkedIn explained they were using Kafka when they announced it. 
+
+As you can see, they have services sending messages to kafka, real-time data like views, and some consumers
+  reading those same messages
+  
+This is a real-time system, so performance is not an issue. At LinkedIn scale. 
+
+9-
+It is easy to iterate over the idea of linkedIn and bring it further
+
+If kafka is good enough to move data in real time between services, we can use it as our main pipeline to communicate microservices
+
+You use a topic as a 'bounded context' (remember definitions). For example, pets. Or listing.
+
+Each topic has a communication protocol defined, in such a way that consumers ignore non-compliant messages 
+  (postel law - accept anything, be very strict on what you send)
+  
+Any service that needs to interact with one bounded context just plugs into the topic and reads/writes
+
+What if a message belongs to many topics? Well, if real bounded context, shouldn't happen
+
+10-   
+Your may be asking: why Kafka and not Rabbit or ActiveMQ? 
+
+Data shows Kafka seems to be more performant and reliable than these two. For example this test by Adam Warski
+  Well I think it talk by itself, those are messages per second, that is Rabbit, that is Kafka. 
+    
+Design differences: Kafka seems to work better with consumers that may be offline. Given we may have services 
+  going offline almost for sure, it's good your tool tackles for that
+
+11-
+We said each topic follows a protocol. Let' talk about them
+
+Protocols are a contract. We define what messages can you find in a given topic, what do they contain. 
+
+Doesn't define what your service does with them. 
+
+They need to be versioned and backwards compatible. That is important, new services may require you to extend protocol.
+  Adding new messages should have 0 impact on existing clients (will ignore them), but be careful on messaging format
+  and breaking older services
+  
+Nothing too new,   
+
+12- 
+An important detail is that Kafka guarantees at least once delivery.
+
+Said in another way: you will probably get the messages more than once. 
+
+This means you have to be very careful with the messages you send, as you want replayable messages. 
+
+A crud-style message may cause problems, while a more coarse message may be ok.
+
+13-
+An example: let's imagine the pet types topic
+
+We could define two kind of messages:
+
+At the top, we have a crud-style protocol with some message types. Each atomic operation is sent across.
+  Create, delete, rename...Each consumer has to understand and act on each message updating it's view
+
+Below we have a protocol with only 1 message: every time there is a change in the pet types we accept,
+  we send a list with all of them. Consumer can just swap in-memory data by new content
+  
+What about new consumers? Replay all messages? Snapshots?    
+  
+I know some may be worried about performance, trust me Kafka works fine with
+  messages of a several Kb in size, it's ok
+  
+14-
+This brings us to testing in this kind of environment, protocol based.
+
+Unit tests are easy, you just fake messages. Done.
+
+The problem is with integration tests: what are you integrating with? We are in changing environment, 
+  we don't want to update tests across all services if we add a new one
+
+This is where we have to move to a different approach, testing for protocol compliance. Ensure you can read/ignore messages
+  and that you write valid messages in the expected format. Is easy to test against it.
+
+You may be worried about emerging behaviour. Microservices require a change of mentality, metrics over tests.
+
+Not saying ignore end to end testing, you will want some, but moving focus to another concept.  
+
+15-
+So we have decide to use kafka topics to guide microservices interaction, and a protocol to ensure compliance
+
+Remember the issues we had? I put the list again: service discoverability, add/remove services,
+  multiple languages, data integrity, error management...
+  
+How does this approach solve them?  
+
+
+16-
+For some of the issues the solution is trivial
+
+Service discoverability is simplified: we have only 1 endpoint, Kafka and the topics you interact with. 
+  Nothing else to worry about
+  
+Want to use multiple languages? Sure, no problem. Use the corresponding kafka client. Most common languages 
+  are covered, it should be easy enough
+  
+What about adding/removing a service? As simple as subscribing/unsubscribing from a topic. 
+  Production issue, metrics are off? Unplug. 
+  
+
+17-
+The are other issues we mentioned. For example, data integrity
+
+If you have 1 producer and N consumers there's no real issue. Producer writes, consumers read.
+  Worst case, if consumer can't read (temporally) it will catch up later on
+  
+18-
+What if we have multiple producers in the topic? I'm not talking about multiple instances of the same service
+  running in parallel, like multiple 'pet types editors', but many independent producers
+
+This could (stress on could) cause clashes is some scenarios
+
+The default approach is to increase the number of valid messages in the protocol. Each service producing a different message 
+    should avoid conflict, and consumers may reconcile data if needed. Increases protocol complexity
+	
+19-
+But if that still doesn't solve the issue, because we can't add more messages or because the nature of the protocol we still 
+  have two options
+  
+One is to isolate publishing messages to kafka from the event that generates these messages. For example, if we will
+  have many concurrent changes over the same data structure, we may want to break this internally into 2 steps
+
+20-
+But if, somehow, that doesn't work you can always fall back to things like CRDT. 
+
+I have to confess this is still quite new to me, but CRDTs guarantee strong eventual consistency. In particular 
+ you may want to look at CmRDT which use
+ events persisted in an event/transaction log to achieve consistency
+
+The downside is that there is a limited set of data structures that can be used for this which can make things harder
+
+That said, in the work I know we have not hit this situation. This is considering a worst case scenario, if you get there
+  you may as well use the implementation of CRDT over Akka Cluster or some other way of communicating events across 
+  services
+
+21-
+The last issue mentioned was error management. In an ideal scenario all works as expected
+
+22-
+But what if suddenly a service can't read from Kafka? Remember, network will fail, is not about if but when
+
+It is important to know what caused the error. Was it the network? At least one delivery, message already in topic. 
+  We can always read it again, some extra latency at worst
+
+ Was it the message format? This means some service is not compliant 
+  to the protocol, your integration tests failed or are wrong. 
+  
+Was it a consumer exception? A bug when parsing the message? Fix it, again failure in compliance with protocol.
+ 
+So, in case it wasn't clear, protocol compliance is important  
+
+23-
+What if the issue happens when writing?
+
+We have at least once delivery, which means consumers (and protocol) should be able to tackle repeated messages.
+
+So we can just write it again. But that could become a problem if the network issue takes a while to be solved. 
+ Status may change (think on several updates to a dataset) and complicate things
+
+For smaller datasets, you may as well send the full dataset every time. So on failure you discard the message,
+  once network works your protocol is sending everything. Remember 'pet types'?
+
+What on larger datasets? Think listings, a few million pets on sale, where a message is a single pet on sale.
+
+One solution is to keep track of the messages to be sent. We can have a 'dirty' mark on data to be sent again, 
+  things like that, resending required messages until they succeed.
+  
+24-
+Another option is sending everything when you detect this error. Seems crazy?
+
+1 kb of data is around 200 words in english, not small for a message. Kafka tests show it sending more than 95K
+  of these messages per second. 
+  
+In services like AWS private traffic is for free, so no extra cost. If you are going to send across regions
+  that changes, but is an scenario you can control
+
+Basically, abuse at least once delivery. Your protocol and consumers support it, and it will make your life easier.
+  Less error management code -> less bugs -> better systems
+  
+25-
+At this point there is a question that I'm sure many of you are wondering: what about 'single point of failure'
+
+After all, we are using Kafka as the backbone of our system. So this is the happy scenario but what if suddenly
+
+26-
+this happens? Kafka is gone. Services can't talk to it. 
+
+First of all let me say that this is unlikely. The standard solution against this kind of scenario is clustering,
+  which kafka supports. But we may as well plan for bad things
+  
+Ideally your services facing customers or external interfaces have read-only models in contained datastores, or 
+  datastores (source of truth) to store changes sent to the service. Once Kafka is restored we can republish 
+  changes (same as an error writing we mentioned before)
+
+Having local datastores makes sense, if the service is going to be the source of truth for something you 
+  want him to manage that. Boundaries.
+
+If something is very very critical? We can always fallback on error to REST calls, to keep data going. We are at-lest-once
+ so when Kafka is restored, there may be some extra work processing duplicate messages, that is all.
+ 
+
+
+27-
+And we are done. So, to recap, I've been explaining how you could use Kafka to coordinate microservices in a simple way
+
+You create topics, with a protocol that defines valid messages, and use them as the main communication hub between services
+
+We have also seen ow to tackle some of the issues you may expect in these systems
+
+28-
+Now, I've spoken for a while, but if you keep one idea from this talk, let it be this one:
+
+Abuse at-least-once delivery protocols. They remove a lot of the complexity. 
+
+I lied, the complexity is there, but is being pushed to a lower level you are not coding. Kafka does the work.
+  And if you don't like Kafka, well, use something else. But define your messages around this. Many issues become 
+  trivial: just send it/read it again. Done.
+  
+I know it seems obvious to many of you, because the level in this Scala Exchange is very high, but sometimes doesn't 
+  seem so obvious. Abuse it.
+  
+29-
+That's all, thanks for listening to all this, and I'll be glad to answer any questions you may have now or later. 
